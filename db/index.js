@@ -1,6 +1,6 @@
 const { Client } = require("pg");
 const { rows } = require("pg/lib/defaults");
-const client = new Client(`postgres://localhost:5432/juicebox-dev`);
+const client = new Client(process.env.DATABASE_URL || `postgres://localhost:5432/juicebox-dev`);
 
 module.exports = {
   client,
@@ -15,6 +15,7 @@ module.exports = {
   createTags,
   addTagsToPost,
   getPostsByTagName,
+  getUserByUsername
 };
 
 ///////////
@@ -110,28 +111,37 @@ async function getUserById(userId) {
   return user;
 }
 
+async function getUserByUsername(username) {
+  try {
+    const { rows: [user] } = await client.query(`
+      SELECT *
+      FROM users
+      WHERE username=$1;
+    `, [username]);
+
+    return user;
+  } catch (error) {
+    throw error;
+  }
+}
+
 ///////////
 /* POSTS */
 ///////////
 
 async function createPost({ authorId, title, content, tags = [] }) {
   try {
-    const {
-      rows: [post],
-    } = await client.query(
-      `
-      insert into posts ("authorId", title, content)
-      values ($1, $2, $3)
-      returning *;
-    `,
-      [authorId, title, content]
-    );
+    const { rows: [ post ] } = await client.query(`
+      INSERT INTO posts("authorId", title, content) 
+      VALUES($1, $2, $3)
+      RETURNING *;
+    `, [authorId, title, content]);
 
     const tagList = await createTags(tags);
 
     return await addTagsToPost(post.id, tagList);
-  } catch (err) {
-    throw err;
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -218,56 +228,42 @@ async function getPostsByUser(userId) {
 
 async function getPostById(postId) {
   try {
-    const {
-      rows: [post],
-    } = await client.query(
-      `
-      select * from posts
-      where id=$1
-    `,
-      [postId]
-    );
+    const { rows: [ post ]  } = await client.query(`
+      SELECT *
+      FROM posts
+      WHERE id=$1;
+    `, [postId]);
 
-    // select the tags from a particular post
-    // by joining all tags in the tags table
-    // on all post_tags records in the post_tags through table
-    // IF -> WHERE post_tags record tagId matches the postId
-    // this allows to grab only the tags associated with a particular post
-    // since there's a many:many (many-to-many) relationship here
-    // we need to make sure that tags don't end up in an exclusive relationship with any given post
-    // otherwise they won't be useful to us as categories
-    const { rows: tags } = await client.query(
-      `
-      select tags.* from tags
-      join post_tags on tags.id=post_tags."tagId"
-      where post_tags."postId"=$1
-    `,
-      [postId]
-    );
+    // THIS IS NEW
+    if (!post) {
+      throw {
+        name: "PostNotFoundError",
+        message: "Could not find a post with that postId"
+      };
+    }
+    // NEWNESS ENDS HERE
 
-    const {
-      rows: [author],
-    } = await client.query(
-      `
-      select id, username, name, location from users
-      where id=$1
-    `,
-      [post.authorId]
-    );
+    const { rows: tags } = await client.query(`
+      SELECT tags.*
+      FROM tags
+      JOIN post_tags ON tags.id=post_tags."tagId"
+      WHERE post_tags."postId"=$1;
+    `, [postId])
+
+    const { rows: [author] } = await client.query(`
+      SELECT id, username, name, location
+      FROM users
+      WHERE id=$1;
+    `, [post.authorId])
 
     post.tags = tags;
     post.author = author;
 
-    // delete is a special keyword that completely removes a key (ie, a field)
-    // from an object
     delete post.authorId;
 
-    // before deleting: post = { ..., authorId: INT }
-    // after deleting, post = { ... }, authorId has been COMPLETELY REMOVED
-
     return post;
-  } catch (err) {
-    throw err;
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -370,3 +366,4 @@ async function addTagsToPost(postId, tagList) {
     throw err;
   }
 }
+
